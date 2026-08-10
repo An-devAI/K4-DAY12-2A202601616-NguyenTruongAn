@@ -23,14 +23,39 @@
 #            docker images day12-chat:prod     # xem dung lượng
 # ═══════════════════════════════════════════════════════════════════
 
-FROM python:3.11
+# ---- Stage 1: cài dependencies ----
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+COPY requirements.txt .
+
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+
+# ---- Stage 2: runtime production ----
+FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY . .
+# Lấy thư viện đã cài từ stage builder
+COPY --from=builder /install /usr/local
 
-RUN pip install -r requirements.txt
+# Copy source sau dependencies để tận dụng Docker cache
+COPY app/ app/
+COPY utils/ utils/
+
+# Tạo và dùng user thường
+RUN groupadd --system appgroup \
+    && useradd --system --gid appgroup --no-create-home appuser
+
+USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# python:slim không có curl, nên healthcheck dùng thư viện chuẩn urllib
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD python -c "import os, urllib.request; port = os.getenv('PORT', '8000'); urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=3)"
+
+# Shell form để ${PORT:-8000} được thay bằng port cloud cấp
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
